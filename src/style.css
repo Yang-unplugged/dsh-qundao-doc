@@ -459,3 +459,6 @@ body.is-embed .workspace { width: 100%; height: 100%; }
 body.is-embed .content-layout { padding: 0; overflow: auto; }
 body.is-embed .paper { width: min(100%, 900px); max-width: 900px; margin: 0 auto; padding: 10px 30px 56px 68px; box-shadow: none; background: #fff; }
 body.is-embed .editor-surface { padding: 0; }
+
+/* 嵌入模式：外层不滚动，避免和正文滚动条叠成两条 */
+html.is-embed, html.is-embed body { height: 100%; overflow: hidden; }

@@ -8,13 +8,17 @@
 
 需要 DeepSeek Harness `>=0.2.2-0 <0.3.0-0`、Node.js 20+。
 
-本仓库是「前端应用源码 + 生成好的插件包」结构，可安装的插件包在 `dsh-host-plugin/`：
+```bash
+dsh plugin --profile web add dsh-qundao-doc
+```
+
+也可以直接从 GitHub 装（拿到最新源码；插件包在 `dsh-host-plugin/`）：
 
 ```bash
 dsh plugin --profile web add github:Yang-unplugged/dsh-qundao-doc#path:/dsh-host-plugin
 ```
 
-也可以在 DSH 的插件页用「添加本地插件」，选中本仓库的 `dsh-host-plugin/` 目录。
+或者在 DSH 的插件页用「添加本地插件」，选中本仓库的 `dsh-host-plugin/` 目录。
 装完重启 `dsh web`，侧栏出现「群岛文档」。
 
 ## 能做什么

@@ -37,7 +37,7 @@ const transportBridge = `(function(){
     const target=typeof input==='string'?input:input.url;
     if(!target.startsWith('/api/'))throw new Error('Unsupported local resource');
     const body=options.body?JSON.parse(options.body):undefined;
-    return hostFetch('api/qundao-doc.act',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:target,method:options.method||'GET',body})});
+    return hostFetch('api/writing-canvas.act',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:target,method:options.method||'GET',body})});
   };
 })();`;
 

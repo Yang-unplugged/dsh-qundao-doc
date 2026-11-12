@@ -195,6 +195,7 @@ codeBlockBridge.language=({trigger,pos})=>{const target={pos,node:editor.state.d
 codeBlockBridge.toast=text=>editorUI.feedback(text);
 function postToHost(payload){try{window.parent.postMessage({__dshRichEditor:true,...payload},'*')}catch{}}
 if(EMBED){
+  document.documentElement.classList.add('is-embed');
   document.body.classList.add('is-embed');
   active={id:'embed',revision:0,title:'',content:empty,metadata:{}};
   window.addEventListener('message',event=>{
