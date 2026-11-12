@@ -1,7 +1,31 @@
 {
   "name": "dsh-qundao-doc",
   "version": "0.2.0",
-  "private": true,
+  "private": false,
+  "license": "MIT",
+  "author": {
+    "name": "Cheng Yin",
+    "url": "https://github.com/Yang-unplugged"
+  },
+  "homepage": "https://github.com/Yang-unplugged/dsh-qundao-doc#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yang-unplugged/dsh-qundao-doc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Yang-unplugged/dsh-qundao-doc/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "documents",
+    "editor",
+    "rich-text",
+    "local-first"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "index.js",
   "exports": {

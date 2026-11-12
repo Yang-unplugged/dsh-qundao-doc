@@ -24,6 +24,59 @@ import {HeadingNine,Callout,Formula,TrailingParagraphAfterAtom} from './extensio
 import 'katex/dist/katex.min.css';
 import './style.css';
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const RASTER_DATA=/^data:image\/(?:png|jpeg|gif|webp);base64,/i;
+function readAsDataURL(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error('读取图片失败'));reader.onload=()=>resolve(String(reader.result));reader.readAsDataURL(file)})}
+async function shrinkImage(dataUrl,maxSide=1600){
+ if(!RASTER_DATA.test(dataUrl))return dataUrl;
+ if(dataUrl.length<120000)return dataUrl;
+ const img=await new Promise((resolve,reject)=>{const el=new Image();el.onload=()=>resolve(el);el.onerror=()=>reject(new Error('图片解码失败'));el.src=dataUrl});
+ const scale=Math.min(1,maxSide/Math.max(img.naturalWidth||1,img.naturalHeight||1));
+ const canvas=document.createElement('canvas');
+ canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+ canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+ return canvas.toDataURL('image/webp',0.9);
+}
+async function uploadPastedImage(dataUrl,name){
+ try{
+  const mime=/^data:(image\/[a-z0-9.+-]+);/i.exec(dataUrl)?.[1]||'image/png';
+  const base64=dataUrl.slice(dataUrl.indexOf(',')+1);
+  if(!base64)return null;
+  const {asset}=await api('/assets','POST',{name:name||'粘贴的图片',mime,dataBase64:base64});
+  return asset?.url&&/^\/api\/assets\/[0-9a-f]{64}$/.test(asset.url)?asset.url:null;
+ }catch{return null}
+}
+/* 嵌入模式下粘贴图片：先落成资料库资源（body 里只留短 URL）；
+   资源库不可用时退化成压缩后的小图内嵌，避免把整段 base64 塞进每次保存。 */
+function hasClipboardImages(event){
+ const data=event.clipboardData;
+ if(!data)return false;
+ if([...(data.files||[])].some(file=>/^image\/(png|jpeg|gif|webp)$/i.test(file.type)))return true;
+ return /src="data:image\/(?:png|jpeg|gif|webp);base64,/i.test(data.getData('text/html')||'');
+}
+async function pasteEmbedImages(editor,event){
+ const data=event.clipboardData;
+ if(!data)return false;
+ const files=[...(data.files||[])].filter(file=>/^image\/(png|jpeg|gif|webp)$/i.test(file.type));
+ const html=data.getData('text/html')||'';
+ const inline=[...html.matchAll(/src="(data:image\/(?:png|jpeg|gif|webp);base64,[^"]+)"/gi)].map(m=>m[1]);
+ if(!files.length&&!inline.length)return false;
+ event.preventDefault();
+ const sources=[];
+ for(const file of files)sources.push({dataUrl:await readAsDataURL(file),name:file.name||'粘贴的图片'});
+ for(const url of inline)sources.push({dataUrl:url,name:'粘贴的图片'});
+ const results=[];
+ for(const source of sources){
+  let dataUrl=source.dataUrl;
+  try{dataUrl=await shrinkImage(dataUrl)}catch{}
+  const url=await uploadPastedImage(dataUrl,source.name);
+  results.push(url||dataUrl);
+ }
+ if(!results.length)return true;
+ const nodes=[];
+ for(const src of results){nodes.push({type:'image',attrs:{src,alt:''}});nodes.push({type:'paragraph'})}
+ try{editor.chain().focus().insertContent(nodes).run()}catch{}
+ return true;
+}
 let drawerEpoch=0;
 let savePromise=null, navigating=false, active=null, docs=[], dirty=false, saving=false, timer, loading=false, readonly=false, slash=null, slashIndex=0;
 const lowlight=createLowlight(common);
@@ -104,7 +157,7 @@ function codeBlockView({node,getPos,editor}){
     stopEvent(event){return head.contains(event.target)}
   };
 }
-const editor=new Editor({element:$('#editor'),extensions:[...annotationExtensions,Columns,Column,StructuredControls,StarterKit.configure({heading:false,codeBlock:false,link:{openOnClick:false,autolink:true,protocols:['http','https','mailto'],isAllowedUri:(url,ctx)=>/^(https?:|mailto:)/i.test(url)&&ctx.defaultValidate(url)}}),HeadingNine,TaskList,TaskItem.configure({nested:true,HTMLAttributes:{'data-type':'taskItem'}}),Highlight.configure({multicolor:true}),TextStyle,Color,TextAlign.configure({types:['heading','paragraph']}),Table.configure({resizable:true}),TableRow,TableHeader,TableCell,CodeBlockLowlight.extend({addAttributes(){return {...this.parent?.(),wrap:{default:false,parseHTML:e=>e.dataset.wrap==='true',renderHTML:a=>({'data-wrap':String(a.wrap)})}}},addNodeView(){return codeBlockView}}).configure({lowlight,defaultLanguage:'plaintext'}),LocalImage,MediaAttachment,LocalCanvas,Callout,Formula,TrailingParagraphAfterAtom],content:empty,onUpdate(){if(!loading){dirty=true;scheduleSave()}refresh();updateSlash()},onSelectionUpdate(){refresh();updateSlash()},editorProps:{attributes:{'aria-label':'文档正文','spellcheck':'false'},handleKeyDown(view,event){if(event.isComposing)return false;if(slash){if(event.key==='Escape'){slash=null;$('#slash').hidden=true;return true}if(['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();const count=filtered().length;slashIndex=count?(slashIndex+(event.key==='ArrowDown'?1:-1)+count)%count:0;renderSlash();return true}if(event.key==='Enter'){event.preventDefault();runSlash(filtered()[slashIndex]);return true}}return false}}});
+const editor=new Editor({element:$('#editor'),extensions:[...annotationExtensions,Columns,Column,StructuredControls,StarterKit.configure({heading:false,codeBlock:false,link:{openOnClick:false,autolink:true,protocols:['http','https','mailto'],isAllowedUri:(url,ctx)=>/^(https?:|mailto:)/i.test(url)&&ctx.defaultValidate(url)}}),HeadingNine,TaskList,TaskItem.configure({nested:true,HTMLAttributes:{'data-type':'taskItem'}}),Highlight.configure({multicolor:true}),TextStyle,Color,TextAlign.configure({types:['heading','paragraph']}),Table.configure({resizable:true}),TableRow,TableHeader,TableCell,CodeBlockLowlight.extend({addAttributes(){return {...this.parent?.(),wrap:{default:false,parseHTML:e=>e.dataset.wrap==='true',renderHTML:a=>({'data-wrap':String(a.wrap)})}}},addNodeView(){return codeBlockView}}).configure({lowlight,defaultLanguage:'plaintext'}),LocalImage,MediaAttachment,LocalCanvas,Callout,Formula,TrailingParagraphAfterAtom],content:empty,onUpdate(){if(!loading){dirty=true;scheduleSave()}refresh();updateSlash()},onSelectionUpdate(){refresh();updateSlash()},editorProps:{attributes:{'aria-label':'文档正文','spellcheck':'false'},handlePaste(view,event){if(!EMBED||!hasClipboardImages(event))return false;pasteEmbedImages(editor,event);return true},handleKeyDown(view,event){if(event.isComposing)return false;if(slash){if(event.key==='Escape'){slash=null;$('#slash').hidden=true;return true}if(['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();const count=filtered().length;slashIndex=count?(slashIndex+(event.key==='ArrowDown'?1:-1)+count)%count:0;renderSlash();return true}if(event.key==='Enter'){event.preventDefault();runSlash(filtered()[slashIndex]);return true}}return false}}});
 window.dshEditor=editor;
 const commands=[['正文','text zhengwen',()=>editor.chain().focus().setParagraph().run()],...[1,2,3,4,5,6,7,8,9].map(n=>['标题 '+n,'h'+n+' biaoti',()=>editor.chain().focus().toggleHeading({level:n}).run()]),['无序列表','bullet ul wxlb',()=>editor.chain().focus().toggleBulletList().run()],['有序列表','ordered ol yxlb',()=>editor.chain().focus().toggleOrderedList().run()],['任务列表','task todo rwlb',()=>editor.chain().focus().toggleTaskList().run()],['高亮块','callout glk',()=>editor.chain().focus().wrapIn('callout').run()],['代码块','code dm',()=>editor.chain().focus().toggleCodeBlock().run()],['引用','quote yy',()=>editor.chain().focus().toggleBlockquote().run()],['分割线','divider fgx',()=>editor.chain().focus().setHorizontalRule().run()],['表格','table bg',()=>editorUI.tablePicker()],['公式','formula gs',()=>editorUI.valuePanel('插入公式',null,{label:'LaTeX 公式',value:'E=mc^2',validate:v=>v.trim()?null:'请输入公式',onApply:latex=>editor.chain().focus().insertContent({type:'formula',attrs:{latex}}).run()})],['双栏','columns fenlan fl',()=>editor.chain().focus().insertColumns().run()],['图片','image tp',()=>$('#image').click()],['音视频或附件','media audio video attachment fj',()=>$('#attachment').click()],['本地画板','canvas drawing huaban hb',()=>editor.chain().focus().insertLocalCanvas().run()]];
 const commandMeta=[['基础','textBody'],['基础','h1'],['基础','h2'],['基础','h3'],['基础','h4'],['其他标题','headingMore'],['其他标题','headingMore'],['其他标题','headingMore'],['其他标题','headingMore'],['其他标题','headingMore'],['列表','bulletList'],['列表','orderedList'],['列表','taskList'],['内容块','calloutColor'],['内容块','codeBlock'],['内容块','quote'],['内容块','divider'],['内容块','tableColor'],['内容块','formula'],['内容块','columns'],['媒体','image'],['媒体','attachment'],['媒体','whiteboardColor']];
