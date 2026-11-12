@@ -1,0 +1,62 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { DocumentStore, restoreBackup, validateContent } from '../server/store.mjs';
+import { createServer } from '../server/index.mjs';
+const content = text => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+function setup(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-storage-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; }
+test('complete version lifecycle, stale write prevention and reopen', t => {
+  const dir = setup(t); let store = new DocumentStore(dir);
+  const first = store.create({ title: '中文', content: content('原文') });
+  const next = store.update(first.id, { title: '编辑', content: content('新文'), expectedRevision: 1 });
+  assert.equal(next.revision, 2);
+  assert.throws(() => store.update(first.id, { title: 'stale', content: content('lost'), expectedRevision: 1 }), { code: 'CONFLICT' });
+  const restored = store.restore(first.id, { revision: 1, expectedRevision: 2 }); assert.deepEqual(restored.content, first.content);
+  store.setDeleted(first.id, 3, true);
+  assert.throws(() => store.update(first.id, { title: 'x', content: content('x'), expectedRevision: 4 }), { code: 'DELETED' });
+  store.setDeleted(first.id, 4, false); store.close(); store = new DocumentStore(dir);
+  assert.equal(store.get(first.id).revision, 5); assert.equal(store.history(first.id).length, 5); assert.equal(store.get(first.id).deletedAt, null); store.close();
+});
+test('exclusive lock never auto steals; close allows reopen', t => { const dir = setup(t); const store = new DocumentStore(dir); assert.throws(() => new DocumentStore(dir), { code: 'LOCKED' }); store.close(); new DocumentStore(dir).close(); });
+test('corrupt file refuses writes and stays byte identical', t => { const dir = setup(t); const store = new DocumentStore(dir); store.close(); fs.writeFileSync(path.join(dir, 'state.json'), '{broken'); assert.throws(() => new DocumentStore(dir), { code: 'CORRUPT_STORAGE' }); assert.equal(fs.readFileSync(path.join(dir, 'state.json'), 'utf8'), '{broken'); assert.equal(fs.existsSync(path.join(dir, '.lock')), false); });
+test('backup restores entire history and deleted docs only to empty destination', t => { const dir = setup(t); const store = new DocumentStore(path.join(dir, 'source')); const doc = store.create({ title: 'backup', content: content('内容') }); store.setDeleted(doc.id, 1, true); const backup = store.backup(); store.close(); restoreBackup(backup, path.join(dir, 'target')); const target = new DocumentStore(path.join(dir, 'target')); assert.deepEqual(target.backup(), backup); target.close(); assert.throws(() => restoreBackup(backup, path.join(dir, 'target'))); const bad = structuredClone(backup); bad.records[0].history.pop(); assert.throws(() => restoreBackup(bad, path.join(dir, 'bad'))); assert.equal(fs.existsSync(path.join(dir, 'bad')), false); });
+test('validation rejects hostile, giant and deep content while retaining attrs', t => { const store = new DocumentStore(setup(t)); t.after(() => store.close()); assert.throws(() => store.create({ title: ' ', content: content('x') })); assert.throws(() => store.create({ title: 'a'.repeat(301), content: content('x') })); assert.throws(() => validateContent(content('a'.repeat(8 * 1024 * 1024)))); let deep = { type: 'paragraph' }; for (let i = 0; i < 70; i++) deep = { type: 'blockquote', content: [deep] }; assert.throws(() => validateContent({ type: 'doc', content: [deep] })); assert.throws(() => validateContent(JSON.parse('{"type":"doc","content":[],"__proto__":{}}'))); for (const href of ['javascript:alert(1)', 'data:text/html;base64,xxx', '//evil.test', 'file:///etc/passwd']) assert.throws(() => validateContent({ type: 'doc', content: [{ type: 'paragraph', marks: [{ type: 'link', attrs: { href } }] }] })); const rich = { type: 'doc', content: [{ type: 'callout', attrs: { color: '#ffee00', icon: '💡' }, content: [{ type: 'codeBlock', attrs: { language: 'javascript', wrap: true }, content: [{ type: 'text', text: 'code' }] }] }] }; assert.deepEqual(store.create({ title: 'rich', content: rich }).content, rich); });
+test('failed atomic precommit save leaves previous state intact', t => { const dir = setup(t); const store = new DocumentStore(dir); t.after(() => store.close()); const doc = store.create({ title: 'original', content: content('x') }); const original = store.file; store.file = path.join(dir, 'missing', 'state.json'); assert.throws(() => store.update(doc.id, { title: 'lost', content: content('bad'), expectedRevision: 1 })); store.file = original; assert.equal(store.get(doc.id).revision, 1); assert.equal(fs.readdirSync(dir).filter(x => x.endsWith('.tmp')).length, 0); });
+test('HTTP API lifecycle, origin/Host checks and malformed bodies', async t => { const dataDir = setup(t); const { server } = createServer({ dataDir, staticDir: path.join(dataDir, 'intentionally-unbuilt') }); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve))); const base = `http://127.0.0.1:${server.address().port}`;
+  const call = (url, method = 'GET', value, headers = {}) => fetch(base + url, { method, headers: { 'content-type': 'application/json', ...headers }, ...(value === undefined ? {} : { body: typeof value === 'string' ? value : JSON.stringify(value) }) });
+  let response = await call('/api/documents', 'POST', { title: 'API', content: content('hello') }); assert.equal(response.status, 201); const { document: doc } = await response.json();
+  response = await call(`/api/documents/${doc.id}`, 'PUT', { title: 'API2', content: content('world'), expectedRevision: 1 }); assert.equal(response.status, 200);
+  const writes = await Promise.all([1, 2].map(() => call(`/api/documents/${doc.id}`, 'PUT', { title: 'race', content: content('race'), expectedRevision: 2 }))); assert.deepEqual(writes.map(r => r.status).sort(), [200, 409]);
+  assert.equal((await call('/api/documents', 'POST', '{bad')).status, 400);
+  assert.equal((await call('/api/documents', 'POST', {}, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await call('/api/documents', 'POST', '{}', { 'content-type': 'text/plain' })).status, 415);
+  assert.equal((await call('/api/documents/../../etc/passwd')).status, 503);
+  const backup = await (await call('/api/backup')).json(); assert.equal(backup.records[0].history.length, 3);
+  const badHost = await new Promise(resolve => { const req = http.get(base + '/api/documents', { headers: { host: 'evil.test' } }, res => { res.resume(); resolve(res.statusCode); }); req.on('error', resolve); }); assert.equal(badHost, 403);
+});
+test('HTTP history restore/delete/undelete and body cap', async t => {
+  const directory = setup(t); const { server } = createServer({ dataDir: directory }); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = (suffix, method, data) => fetch(base + '/api/documents' + suffix, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const first = (await (await call('', 'POST', { title: 'original', content: content('original') })).json()).document;
+  await call('/' + first.id, 'PUT', { title: 'changed', content: content('changed'), expectedRevision: 1 });
+  const restored = (await (await call('/' + first.id + '/restore', 'POST', { revision: 1, expectedRevision: 2 })).json()).document; assert.equal(restored.title, 'original'); assert.equal(restored.revision, 3);
+  const deleted = (await (await call('/' + first.id, 'DELETE', { expectedRevision: 3 })).json()).document; assert.ok(deleted.deletedAt);
+  const undeleted = (await (await call('/' + first.id + '/undelete', 'POST', { expectedRevision: 4 })).json()).document; assert.equal(undeleted.deletedAt, null);
+  assert.equal((await (await fetch(base + '/api/documents/' + first.id + '/history')).json()).history.length, 5);
+  const large = await call('', 'POST', { title: 'large', content: content('x'.repeat(8 * 1024 * 1024 + 100000)) }); assert.equal(large.status, 413);
+});
+test('static files and CSP are served without external dependencies', async t => {
+  const directory = setup(t); const staticDir = path.join(directory, 'dist'); fs.mkdirSync(staticDir); fs.writeFileSync(path.join(staticDir, 'index.html'), '<!doctype html><p>Test</p>');
+  const { server } = createServer({ dataDir: path.join(directory, 'data'), staticDir }); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/`); assert.equal(response.status, 200); assert.match(response.headers.get('content-security-policy'), /connect-src 'self'/); assert.match(await response.text(), /Test/);
+});
+test('HTML source import preserves untouched source and backup CLI restores', async t => {
+  const { spawnSync } = await import('node:child_process'); const dir = setup(t); const source = path.join(dir, 'legacy.html'); const original = '<h1>中文</h1><script>alert(1)</script>'; fs.writeFileSync(source, original);
+  const root = path.resolve(import.meta.dirname, '..'); const imported = spawnSync(process.execPath, [path.join(root, 'server/import-html-source.mjs'), source, path.join(dir, 'data'), 'archive'], { encoding: 'utf8' }); assert.equal(imported.status, 0, imported.stderr); assert.equal(fs.readFileSync(source, 'utf8'), original);
+  const store = new DocumentStore(path.join(dir, 'data')); assert.equal(store.list()[0].content.content[1].content[0].text, original); const backup = store.backup(); store.close(); const backupFile = path.join(dir, 'backup.json'); fs.writeFileSync(backupFile, JSON.stringify(backup));
+  const restored = spawnSync(process.execPath, [path.join(root, 'server/restore.mjs'), backupFile, path.join(dir, 'restored')], { encoding: 'utf8' }); assert.equal(restored.status, 0, restored.stderr); const second = new DocumentStore(path.join(dir, 'restored')); assert.deepEqual(second.backup(), backup); second.close();
+});

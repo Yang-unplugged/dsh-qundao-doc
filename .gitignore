@@ -1,0 +1,11 @@
+node_modules/
+dist/
+backups/
+.local-data/
+dist-embed.html
+.DS_Store
+*.log
+docs/qa-logs/
+docs/*.json
+SUBMIT-OMDSH.md
+DELIVERY-NOTES.md
