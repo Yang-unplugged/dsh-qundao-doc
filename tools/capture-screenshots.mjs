@@ -1,92 +1,42 @@
 #!/usr/bin/env node
 /**
  * 生成 README 用的界面截图。
- * 启动一个临时资料库的本地服务，写入一份演示文档，再用 Chrome 截图。
  *
- *   node tools/capture-screenshots.mjs
- * 产物：docs/screenshots/*.png
+ *   node tools/capture-screenshots.mjs            # 拍图，产物在 docs/screenshots/
+ *   node tools/capture-screenshots.mjs --serve    # 只起服务，浏览器里手动改演示文档
+ *
+ * 演示文档存在 .screenshot-data/（已 gitignore），不会被删：
+ * 想改文案，用 --serve 打开 http://127.0.0.1:4399 直接改，再跑一次脚本重拍。
  */
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'docs/screenshots');
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qundao-shots-'));
-const port = 4399;
+const dataDir = path.join(root, '.screenshot-data');
+const port = Number(process.env.SHOT_PORT || 4399);
+const serveOnly = process.argv.includes('--serve');
+fs.mkdirSync(dataDir, { recursive: true });
 
-const t = (text, marks) => (marks ? { type: 'text', text, marks } : { type: 'text', text });
-const p = (...content) => ({ type: 'paragraph', attrs: { textAlign: null }, content: content.length ? content : undefined });
-const h = (level, text) => ({ type: 'heading', attrs: { textAlign: null, level }, content: [t(text)] });
-const bullet = (...items) => ({
-  type: 'bulletList',
-  content: items.map((item) => ({
-    type: 'listItem',
-    attrs: { collapsed: false },
-    content: [{ type: 'paragraph', attrs: { textAlign: null }, content: [t(item)] }],
-  })),
-});
-const cell = (text, header = false) => ({
-  type: header ? 'tableHeader' : 'tableCell',
-  attrs: { verticalAlign: 'top', cellBg: null, colspan: 1, rowspan: 1, colwidth: null, align: null },
-  content: text ? [p(t(text))] : [p()],
-});
-const table = (rows, headerRow = true) => ({
-  type: 'table',
-  content: rows.map((row, i) => ({
-    type: 'tableRow',
-    attrs: { rowHeight: null },
-    content: row.map((text) => cell(text, headerRow && i === 0)),
-  })),
-});
+const demo = JSON.parse(fs.readFileSync(path.join(root, 'tools/demo-document.json'), 'utf8'));
+const content = demo.content;
+const DEMO_TITLE = demo.title;
 
-const content = {
-  type: 'doc',
-  attrs: { localComments: null },
-  content: [
-    p(t('把飞书文档那套块编辑手感搬进 DeepSeek Harness，数据只写在这台机器上。')),
-    {
-      type: 'callout',
-      attrs: { color: 'blue', icon: '💡', textColor: null, borderColor: null, backgroundColor: null },
-      content: [p(t('没有云协作，也没有账号体系：文档、评论、版本历史、图片都存在本机目录里，随时整库备份走。'))],
-    },
-    h(2, '为什么是「本地」'),
-    bullet(
-      '写完即存：每次编辑都落一次版本，断网也不影响',
-      '整库是一个带校验的文件，直接拷走就是备份',
-      '冲突可见：别人改过就报 409，不会悄悄覆盖',
-    ),
-    h(2, '功能对照'),
-    table([
-      ['能力', '现状', '说明'],
-      ['块编辑', '已支持', '标题 1–9、列表、任务、引用、分栏、高亮块'],
-      ['表格', '已支持', '9×9 选择器、合并拆分、垂直对齐'],
-      ['版本历史', '已支持', '完整历史、命名版本、恢复'],
-      ['云协作', '未支持', '不做账号与权限，避免半成品协作'],
-    ]),
-    h(2, '保存接口'),
-    {
-      type: 'codeBlock',
-      attrs: { language: 'javascript' },
-      content: [t('await fetch("/api/documents/" + id, {\n  method: "PUT",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({ title, content, expectedRevision: revision }),\n});')],
-    },
-    h(2, '接下来'),
-    bullet('注册 docs_* 工具，让 Agent 能读写这些文档', '把「文档属性」入口补回菜单（已完成）', '原创图标与主题色'),
-  ],
-};
+
 
 const server = spawn(process.execPath, [path.join(root, 'server/index.mjs')], {
   env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+process.on('exit', () => server.kill('SIGTERM'));
+
 const cleanupFns = [];
 const cleanup = async () => {
   for (const fn of cleanupFns.reverse()) await fn();
   server.kill('SIGTERM');
-  fs.rmSync(dataDir, { recursive: true, force: true });
 };
 
 const base = `http://127.0.0.1:${port}`;
@@ -103,26 +53,55 @@ const waitReady = async () => {
 
 try {
   await waitReady();
-  const api = async (method, url, body) => {
+  const api = async (method, url, payload) => {
     const res = await fetch(`${base}${url}`, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: payload ? JSON.stringify(payload) : undefined,
     });
     if (!res.ok) throw new Error(`${method} ${url} failed: ${res.status} ${await res.text()}`);
     return res.json();
   };
-  const { document: doc0 } = await api('POST', '/api/documents', { title: '群岛文档 · 产品说明', content });
 
-  // 制造几条历史版本，并给其中一版命名，截图时历史面板才有内容
-  let rev = doc0.revision;
-  for (const note of ['补充：本机目录默认是 ~/.dsh/qundao-doc。', '补充：备份就是一个文件，拷走即可。']) {
-    const variant = JSON.parse(JSON.stringify(content));
-    variant.content.splice(2, 0, { type: 'paragraph', attrs: { textAlign: null }, content: [{ type: 'text', text: note }] });
-    const { document: next } = await api('PUT', `/api/documents/${doc0.id}`, { title: doc0.title, content: variant, expectedRevision: rev });
-    rev = next.revision;
+  const { documents } = await api('GET', '/api/documents');
+  const existing = documents.find((d) => d.title === DEMO_TITLE && !d.deletedAt);
+
+  if (existing) {
+    console.log(`演示文档已存在（版本 ${existing.revision}）：${path.join(dataDir, 'state.json')}`);
+  } else {
+    // 用三段文案造历史：初稿 → 改一句 → 最终（最终必须等于 fixture，截图才和正文一致）
+    const drafts = [
+      '把飞书文档那套块编辑手感搬进 DeepSeek Harness，先写在本机。',
+      '把飞书文档那套块编辑手感搬进 DeepSeek Harness，数据只写本机。',
+    ];
+    const withFirstParagraph = (text) => {
+      const variant = JSON.parse(JSON.stringify(content));
+      const first = variant.content.find((n) => n.type === 'paragraph' && n.content);
+      first.content = [{ type: 'text', text }];
+      return variant;
+    };
+
+    const { document: doc0 } = await api('POST', '/api/documents', { title: DEMO_TITLE, content: withFirstParagraph(drafts[0]) });
+    let rev = doc0.revision;
+    for (const text of drafts.slice(1)) {
+      const { document: next } = await api('PUT', `/api/documents/${doc0.id}`, {
+        title: DEMO_TITLE,
+        content: withFirstParagraph(text),
+        expectedRevision: rev,
+      });
+      rev = next.revision;
+    }
+    const { document: last } = await api('PUT', `/api/documents/${doc0.id}`, { title: DEMO_TITLE, content, expectedRevision: rev });
+    rev = last.revision;
+    await api('POST', `/api/documents/${doc0.id}/named-versions`, { revision: rev, name: '交付版', expectedRevision: rev });
+    console.log('已创建演示文档');
   }
-  await api('POST', `/api/documents/${doc0.id}/named-versions`, { revision: rev, name: '交付版', expectedRevision: rev });
+
+  if (serveOnly) {
+    console.log(`\n打开 ${base} 编辑「${DEMO_TITLE}」，保存是自动的。`);
+    console.log('改完回到终端 Ctrl-C，然后重跑 node tools/capture-screenshots.mjs 刷新截图。\n');
+    await new Promise(() => {});
+  }
 
   const browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -131,7 +110,7 @@ try {
   cleanupFns.push(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1440, height: 940 }, deviceScaleFactor: 2 });
   await page.goto(base);
-  await page.locator('#documents button').first().click();
+  await page.locator('#documents button').filter({ hasText: DEMO_TITLE }).first().click();
   await page.locator('table').first().waitFor();
   await page.waitForTimeout(600);
 

@@ -9,3 +9,4 @@ docs/qa-logs/
 docs/*.json
 SUBMIT-OMDSH.md
 DELIVERY-NOTES.md
+.screenshot-data/
