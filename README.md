@@ -1,6 +1,6 @@
 # 群岛文档 · Qundao Docs
 
-按飞书文档交互复刻、**只存本机**的富文本文档编辑器，作为 DeepSeek Harness（DSH）的侧栏面板运行。
+按飞书文档交互复刻的富文本文档编辑器，作为 DeepSeek Harness（DSH）的侧栏面板运行。
 
 ![编辑器界面](docs/screenshots/editor.png)
 
@@ -98,4 +98,4 @@ node tools/capture-screenshots.mjs  # 重新生成 README 截图
 
 ---
 
-A local-first rich-text document editor for DeepSeek Harness, modelled on Feishu Docs. Documents, comments, revision history and image assets stay on your machine.
+A rich-text document editor for DeepSeek Harness, modelled on Feishu Docs. Documents, comments, revision history and image assets stay on your machine.
